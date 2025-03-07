@@ -22,7 +22,7 @@ def default_config():
         "keep_browser_open": False,
         "headless": False,
         "disable_security": True,
-        "enable_recording": True,
+        "enable_recording": False,
         "window_w": 1280,
         "window_h": 1100,
         "save_recording_path": "./tmp/record_videos",

@@ -18,6 +18,7 @@ from browser_use.controller.views import (
     SearchGoogleAction,
     SendKeysAction,
     SwitchTabAction,
+    HoverElementAction
 )
 import logging
 

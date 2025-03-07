@@ -91,6 +91,20 @@ class CustomAgent(Agent):
             planner_llm: Optional[BaseChatModel] = None,
             planner_interval: int = 1,  # Run planner every N steps
     ):
+
+        # Load sensitive data from environment variables
+        env_sensitive_data = {}
+        for key, value in os.environ.items():
+            if key.startswith('SENSITIVE_'):
+                env_key = key.replace('SENSITIVE_', '', 1).lower()
+                env_sensitive_data[env_key] = value
+    
+        # Merge environment variables with provided sensitive_data
+        if sensitive_data is None:
+            sensitive_data = {}
+        sensitive_data = {**env_sensitive_data, **sensitive_data}  # Provided data takes precedence
+
+
         super().__init__(
             task=task,
             llm=llm,
@@ -189,6 +203,7 @@ class CustomAgent(Agent):
 
         step_info.step_number += 1
         important_contents = model_output.current_state.important_contents
+        logger.info(f"✨ Important Content: \n{important_contents}")
         if (
                 important_contents
                 and "None" not in important_contents
@@ -227,7 +242,7 @@ class CustomAgent(Agent):
         ai_content = repair_json(ai_content)
         parsed_json = json.loads(ai_content)
         parsed: AgentOutput = self.AgentOutput(**parsed_json)
-
+        logger.info(f"🧠 output: {parsed}")
         if parsed is None:
             logger.debug(ai_message.content)
             raise ValueError('Could not parse response.')
@@ -330,6 +345,7 @@ class CustomAgent(Agent):
                 raise e
 
             actions: list[ActionModel] = model_output.action
+            logger.info(f"🛠️ Actions model: {actions}")
             result: list[ActionResult] = await self.controller.multi_act(
                 actions,
                 self.browser_context,
