@@ -1,7 +1,10 @@
 import pdb
 import logging
+import pandas as pd
 
 from dotenv import load_dotenv
+from bdb import test
+from queue import Queue
 
 load_dotenv()
 import os
@@ -40,6 +43,10 @@ from src.utils.utils import update_model_dropdown, get_latest_files, capture_scr
 _global_browser = None
 _global_browser_context = None
 _global_agent = None
+
+# Thêm biến global để lưu trữ testcase queue
+_global_testcase = ""
+_global_batch_results = []
 
 # Create the global agent state instance
 _global_agent_state = AgentState()
@@ -458,9 +465,11 @@ async def run_with_stream(
     max_actions_per_step,
     tool_calling_method
 ):
-    global _global_agent_state
+    global _global_agent_state, _global_testcase_queue, _global_batch_results
     stream_vw = 80
     stream_vh = int(80 * window_h // window_w)
+    combined_task = f"{task}\n Execute the following test cases in ID order:\n{_global_testcase}"
+    logger.info(combined_task)
     if not headless:
         result = await run_browser_agent(
             agent_type=agent_type,
@@ -480,7 +489,7 @@ async def run_with_stream(
             save_agent_history_path=save_agent_history_path,
             save_trace_path=save_trace_path,
             enable_recording=enable_recording,
-            task=task,
+            task=combined_task,
             add_infos=add_infos,
             max_steps=max_steps,
             use_vision=use_vision,
@@ -513,8 +522,8 @@ async def run_with_stream(
                     save_agent_history_path=save_agent_history_path,
                     save_trace_path=save_trace_path,
                     enable_recording=enable_recording,
-                    task=task,
-                    add_infos=add_infos,
+                    task=combined_task,  # Use the combined task
+                    add_infos=add_infos,  # Use the combined additional info
                     max_steps=max_steps,
                     use_vision=use_vision,
                     max_actions_per_step=max_actions_per_step,
@@ -527,13 +536,12 @@ async def run_with_stream(
             final_result = errors = model_actions = model_thoughts = ""
             latest_videos = trace = history_file = None
 
-
             # Periodically update the stream while the agent task is running
             while not agent_task.done():
                 try:
                     encoded_screenshot = await capture_screenshot(_global_browser_context)
                     if encoded_screenshot is not None:
-                        html_content = f'<img src="data:image/jpeg;base64,{encoded_screenshot}" style="width:{stream_vw}vw; height:{stream_vh}vh ; border:1px solid #ccc;">'
+                        html_content = f'<img src="data:image/jpeg;base64,{encoded_screenshot}" style="width:{stream_vw}vw; height:{stream_vh}vh; border:1px solid #ccc;">'
                     else:
                         html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Waiting for browser session...</h1>"
                 except Exception as e:
@@ -596,10 +604,11 @@ async def run_with_stream(
 
         except Exception as e:
             import traceback
+            error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
             yield [
                 f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Waiting for browser session...</h1>",
                 "",
-                f"Error: {str(e)}\n{traceback.format_exc()}",
+                error_msg,
                 "",
                 "",
                 None,
@@ -608,7 +617,6 @@ async def run_with_stream(
                 gr.update(value="Stop", interactive=True),  # Re-enable stop button
                 gr.update(interactive=True)    # Re-enable run button
             ]
-
 # Define the theme map globally
 theme_map = {
     "Default": Default(),
@@ -675,7 +683,7 @@ def create_ui(config, theme_name="Ocean"):
         border-radius: 10px;
     }
     """
-
+    global _global_testcase
     with gr.Blocks(
             title="Browser Use WebUI", theme=theme_map[theme_name], css=css
     ) as demo:
@@ -853,29 +861,75 @@ def create_ui(config, theme_name="Ocean"):
                     )
 
             with gr.TabItem("🤖 Run Agent", id=4):
-                task = gr.Textbox(
-                    label="Task Description",
-                    lines=4,
-                    placeholder="Enter your task here...",
-                    value=config['task'],
-                    info="Describe what you want the agent to do",
-                )
-                add_infos = gr.Textbox(
-                    label="Additional Information",
-                    lines=3,
-                    placeholder="Add any helpful context or instructions...",
-                    info="Optional hints to help the LLM complete the task",
-                )
+                with gr.Tabs() as run_tabs:
+                    with gr.TabItem("Single Task", id="single_task"):
+                        task = gr.Textbox(
+                            label="Task Description",
+                            lines=4,
+                            placeholder="Enter your task here...",
+                            value=config['task'] + str(_global_testcase),
+                            info="Describe what you want the agent to do",
+                        )
 
-                with gr.Row():
-                    run_button = gr.Button("▶️ Run Agent", variant="primary", scale=2)
-                    stop_button = gr.Button("⏹️ Stop", variant="stop", scale=1)
+                        add_infos = gr.Textbox(
+                            label="Additional Information",
+                            lines=3,
+                            placeholder="Add any helpful context or instructions...",
+                            info="Optional hints to help the LLM complete the task",
+                        )
+                        excel_file = gr.File(
+                            label="Upload Excel Testcases File",
+                            file_types=[".xlsx", ".xls"],
+                        )
+                        gr.Markdown("*Upload an Excel file containing testcases with columns for ID, Task, and AdditionalInfo*")
+
+                        with gr.Row():
+                            testcase_status = gr.Textbox(
+                                label="Queue Status", 
+                                value="No testcases loaded",
+                                interactive=False
+                            )
+                            
+                            remaining_count = gr.Number(
+                                label="Remaining Testcases",
+                                value=0,
+                                interactive=False
+                            )
+                            
+                        with gr.Row():
+                            load_testcases_button = gr.Button("Load Testcases", variant="primary")
+                            clear_queue_button = gr.Button("Clear Queue", variant="secondary")
+                            
+                        batch_results = gr.Dataframe(
+                            headers=["Testcase ID", "Task", "Status", "Result", "Errors"],
+                            label="Batch Test Results"
+                        )
+
+                        with gr.Row():
+                            run_button = gr.Button("▶️ Run Agent", variant="primary", scale=2)
+                            stop_button = gr.Button("⏹️ Stop", variant="stop", scale=1)
                     
+
+                        # Bind the batch processing buttons
+                        load_testcases_button.click(
+                            fn=load_testcases_from_file,
+                            inputs=[excel_file],
+                            outputs=[testcase_status, remaining_count, batch_results]
+                        )
+
+                        clear_queue_button.click(
+                            fn=clear_testcase_queue,
+                            inputs=[],
+                            outputs=[testcase_status, remaining_count, batch_results]
+                        )
+              
                 with gr.Row():
                     browser_view = gr.HTML(
                         value="<h1 style='width:80vw; height:50vh'>Waiting for browser session...</h1>",
                         label="Live Browser View",
-                )
+                    )
+            
+            # Remove the standalone Batch Processing tab (ID 9)
             
             with gr.TabItem("🧐 Deep Research", id=5):
                 research_task_input = gr.Textbox(label="Research Task", lines=5, value="Compose a report on the use of Reinforcement Learning for training Large Language Models, encompassing its origins, current advancements, and future prospects, substantiated with examples of relevant models and techniques. The report should reflect original insights and analysis, moving beyond mere summarization of existing literature.")
@@ -1055,6 +1109,88 @@ def create_ui(config, theme_name="Ocean"):
         keep_browser_open.change(fn=close_global_browser)
 
     return demo
+
+#---------------------------------------------Hieu---------------------------------
+def read_testcases_from_excel(file_path: str) -> str:
+    """Read Excel file and convert to structured testcase format"""
+    try:
+        df = pd.read_excel(file_path)
+        
+        # Chuẩn bị chuỗi đầu ra
+        result = "TASK: Thực hiện tất cả các testcase dưới đây sau theo trình tự.\n\nTESTCASES:\n"
+        
+        # Duyệt từng hàng trong dataframe
+        for index, row in df.iterrows():
+            # Xử lý ID - đảm bảo định dạng TC001
+            tc_id = f"{row['ID']}"
+            
+            # Bắt đầu testcase
+            result += f"---\nID: {tc_id}\n"
+            
+            # Thêm mục đích kiểm thử
+            if 'Mục đích kiểm thử' in row and pd.notna(row['Mục đích kiểm thử']):
+                result += f"Mục đích kiểm thử: {row['Mục đích kiểm thử']}\n"
+            
+            # Xử lý các bước thực hiện - có thể cần định dạng lại để đánh số từng bước
+            if 'Các bước thực hiện' in row and pd.notna(row['Các bước thực hiện']):
+                steps_text = str(row['Các bước thực hiện'])
+                
+                # Nếu các bước không bắt đầu bằng số, thì chúng ta định dạng lại
+                if not any(line.strip().startswith(str(i) + '.') for i in range(1, 10) for line in steps_text.split('\n')):
+                    result += "Các bước thực hiện:\n"
+                    step_num = 1
+                    for line in steps_text.split('\n'):
+                        line = line.strip()
+                        if line and not line.startswith("Tại") and not line.endswith(":"):
+                            result += f"{step_num}. {line}\n"
+                            step_num += 1
+                        else:
+                            result += f"{line}\n"
+                else:
+                    result += f"Steps:\n{steps_text}\n"
+            
+            # Thêm kết quả mong muốn
+            if 'Kết quả mong muốn' in row and pd.notna(row['Kết quả mong muốn']):
+                result += f"Kết quả mong muốn: {row['Kết quả mong muốn']}\n"
+        
+        return result
+    except Exception as e:
+        print(f"Error reading Excel file: {str(e)}")
+        return ""
+
+
+def load_testcases_from_file(file_path):
+    # Use the global variables
+    global _global_testcase, _global_batch_results
+    
+    if file_path is None:
+        return "No file provided", 0, []
+    
+    try:
+        # Chuyển đổi dữ liệu Excel sang định dạng testcase có cấu trúc
+        formatted_testcases = read_testcases_from_excel(file_path)
+        
+        # Đọc DataFrame để đếm số lượng testcase và hiển thị trong UI
+        df = pd.read_excel(file_path)
+        testcase_count = len(df)
+        
+        # Clear previous results and store new formatted string
+        _global_batch_results = []
+        _global_testcase = formatted_testcases  # Assign only once
+        
+        # Log just a summary instead of the entire content to avoid duplication
+        logger.info(f"Loaded {testcase_count} testcases from {os.path.basename(file_path)}")
+        
+        return f"Loaded {testcase_count} testcases from {os.path.basename(file_path)}", testcase_count, []
+    except Exception as e:
+        return f"Error loading testcases: {str(e)}", 0, []
+
+ 
+def clear_testcase_queue():
+    global _global_testcase, _global_batch_results
+    _global_testcase = []
+    _global_batch_results = []
+    return "Testcase queue cleared", [], []
 
 def main():
     parser = argparse.ArgumentParser(description="Gradio UI for Browser Agent")
