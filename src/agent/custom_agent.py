@@ -329,7 +329,6 @@ class CustomAgent(Agent):
                 await self._run_planner()
             input_messages = self.message_manager.get_messages()
             self._check_if_stopped_or_paused()
-            logger.info(f"📚 Input messages: {input_messages}")
             try:
                 model_output = await self.get_next_action(input_messages)
                 if self.register_new_step_callback:

@@ -5,6 +5,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from bdb import test
 from queue import Queue
+from csv import excel
 
 load_dotenv()
 import os
@@ -47,6 +48,9 @@ _global_agent = None
 # Thêm biến global để lưu trữ testcase queue
 _global_testcase = ""
 _global_batch_results = []
+
+# Thêm biến global để lưu trữ excel_path
+_global_excel_path = None
 
 # Create the global agent state instance
 _global_agent_state = AgentState()
@@ -1112,63 +1116,78 @@ def create_ui(config, theme_name="Ocean"):
 
 #---------------------------------------------Hieu---------------------------------
 def read_testcases_from_excel(file_path: str) -> str:
-    """Read Excel file and convert to structured testcase format"""
+    """Read Excel file and format test cases into structured text."""
     try:
+        # Read Excel file with mixed datatypes
         df = pd.read_excel(file_path)
+        logger.info(f"df: {df}")
         
-        # Chuẩn bị chuỗi đầu ra
-        result = "TASK: Thực hiện tất cả các testcase dưới đây sau theo trình tự.\n\nTESTCASES:\n"
-        
-        # Duyệt từng hàng trong dataframe
-        for index, row in df.iterrows():
-            # Xử lý ID - đảm bảo định dạng TC001
-            tc_id = f"{row['ID']}"
+        # Convert ID column to string type and fill missing values
+        df['ID'] = df['ID'].astype(str).fillna('')
+        df['Mục đích kiểm thử'] = df['Mục đích kiểm thử'].fillna('')
+
+        result = ""
+
+        for _, row in df.iterrows():
+            # Safely convert ID to string and clean it
+            # Convert to string first to avoid 'float has no strip' error
+            tc_id = str(row['ID']).strip()
             
-            # Bắt đầu testcase
-            result += f"---\nID: {tc_id}\n"
-            
-            # Thêm mục đích kiểm thử
-            if 'Mục đích kiểm thử' in row and pd.notna(row['Mục đích kiểm thử']):
-                result += f"Mục đích kiểm thử: {row['Mục đích kiểm thử']}\n"
-            
-            # Xử lý các bước thực hiện - có thể cần định dạng lại để đánh số từng bước
-            if 'Các bước thực hiện' in row and pd.notna(row['Các bước thực hiện']):
-                steps_text = str(row['Các bước thực hiện'])
+            # Handle case where ID might be "nan" after string conversion
+            if tc_id.lower() == 'nan':
+                continue
                 
-                # Nếu các bước không bắt đầu bằng số, thì chúng ta định dạng lại
-                if not any(line.strip().startswith(str(i) + '.') for i in range(1, 10) for line in steps_text.split('\n')):
-                    result += "Các bước thực hiện:\n"
-                    step_num = 1
-                    for line in steps_text.split('\n'):
-                        line = line.strip()
-                        if line and not line.startswith("Tại") and not line.endswith(":"):
-                            result += f"{step_num}. {line}\n"
-                            step_num += 1
-                        else:
-                            result += f"{line}\n"
-                else:
-                    result += f"Steps:\n{steps_text}\n"
-            
-            # Thêm kết quả mong muốn
-            if 'Kết quả mong muốn' in row and pd.notna(row['Kết quả mong muốn']):
-                result += f"Kết quả mong muốn: {row['Kết quả mong muốn']}\n"
-        
+            # Remove decimal part if the ID is a numeric value like "1.0"
+            if tc_id.endswith('.0'):
+                tc_id = tc_id[:-2]  # Remove the '.0' part
+
+            result += f"\n### **Test Case {tc_id}**  \n"
+            result += f"**ID:** {tc_id}  \n"
+
+            if pd.notna(row.get('Mục đích kiểm thử')) and row.get('Mục đích kiểm thử') != '':
+                result += f"**Mục đích kiểm thử:** {row['Mục đích kiểm thử']}  \n"
+
+            if pd.notna(row.get('Loại thực hiện')) and str(row.get('Loại thực hiện')) != 'nan':
+                result += f"**Loại thực hiện:** {row['Loại thực hiện']}  \n"
+
+            if pd.notna(row.get('Các bước thực hiện')) and str(row.get('Các bước thực hiện')) != 'nan':
+                result += "**Các bước thực hiện:**  \n"
+                steps = str(row['Các bước thực hiện']).split('\n')
+                for step in steps:
+                    step = step.strip()
+                    if step and step.lower() != 'nan':
+                        result += f"- {step}  \n"
+
+            if pd.notna(row.get('Kết quả mong muốn')) and str(row.get('Kết quả mong muốn')) != 'nan':
+                result += f"**Kết quả mong muốn:**  \n- {row['Kết quả mong muốn']}  \n"
+
+            if pd.notna(row.get('Kết quả test')) and str(row.get('Kết quả test')) != 'nan':
+                result += f"**Kết quả test:** {row['Kết quả test']}  \n"
+
+            result += "---  \n"
+
         return result
     except Exception as e:
-        print(f"Error reading Excel file: {str(e)}")
+        logger.error(f"Error reading Excel file: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         return ""
-
 
 def load_testcases_from_file(file_path):
     # Use the global variables
-    global _global_testcase, _global_batch_results
+    global _global_testcase, _global_batch_results, _global_excel_path
     
     if file_path is None:
         return "No file provided", 0, []
     
     try:
+        _global_excel_path = file_path
+        os.environ['EXCEL_FILE_PATH'] = file_path
+        logger.info(f"file_path: {os.environ['EXCEL_FILE_PATH']}")
         # Chuyển đổi dữ liệu Excel sang định dạng testcase có cấu trúc
         formatted_testcases = read_testcases_from_excel(file_path)
+
+        logger.info(f"formatted_testcases: {formatted_testcases}")
         
         # Đọc DataFrame để đếm số lượng testcase và hiển thị trong UI
         df = pd.read_excel(file_path)

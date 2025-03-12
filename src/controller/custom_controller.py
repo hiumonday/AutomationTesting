@@ -18,7 +18,8 @@ from browser_use.controller.views import (
     SearchGoogleAction,
     SendKeysAction,
     SwitchTabAction,
-    HoverElementAction
+    HoverElementAction,
+    CompleteEachTestCasesAction,
 )
 import logging
 
@@ -48,3 +49,12 @@ class CustomController(Controller):
             await page.keyboard.type(text)
 
             return ActionResult(extracted_content=text)
+        
+        @self.registry.action("Zoom in")
+        async def zoom_in(browser: BrowserContext):
+            page = await browser.get_current_page()
+            await page.evaluate("document.body.style.zoom='150%'")
+
+            return ActionResult(extracted_content="Zoomed in")
+
+

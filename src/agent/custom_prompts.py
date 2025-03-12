@@ -86,6 +86,8 @@ class CustomSystemPrompt(SystemPrompt):
 9. Extraction:
     - If your task is to find information or do research - call extract_content on the specific pages to get and store the information.
 
+10. Test Case Completion:
+    - The agent must execute the complete_each_test_cases action if and only if all steps outlined within the specific test case have been performed successfully or unsuccessfully, and there are no remaining actions required on the current page to complete that test case.
 """
         text += f"   - use maximum {self.max_actions_per_step} actions per sequence"
         return text
